@@ -20,7 +20,6 @@ import (
 	"bufio"
 	"crypto/tls"
 	"errors"
-	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -442,8 +441,6 @@ func (m *ServerMux) ListenAndServe(certFile, keyFile string) (err error) {
 				RawQuery: r.URL.RawQuery,
 				Fragment: r.URL.Fragment,
 			}
-			lmsg := fmt.Sprintf("redirect for %s", u.String())
-			log.logger.Info(lmsg)
 			http.Redirect(w, r, u.String(), http.StatusTemporaryRedirect)
 		} else {
 
@@ -460,8 +457,6 @@ func (m *ServerMux) ListenAndServe(certFile, keyFile string) (err error) {
 			// Execute registered handlers, update currentReqs to keep
 			// tracks of current requests currently processed by the server
 			atomic.AddInt32(&m.currentReqs, 1)
-			lmsg := fmt.Sprintf("serving for %s", r.URL.String())
-			log.logger.Info(lmsg)
 			m.handler.ServeHTTP(w, r)
 			atomic.AddInt32(&m.currentReqs, -1)
 		}
