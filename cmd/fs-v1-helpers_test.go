@@ -18,8 +18,38 @@ package cmd
 
 import (
 	"bytes"
+	"io/ioutil"
+	"os"
+	"path"
 	"testing"
+
+	"github.com/minio/minio/pkg/lock"
 )
+
+func TestFSRenameFile(t *testing.T) {
+	// create posix test setup
+	_, path, err := newPosixTestSetup()
+	if err != nil {
+		t.Fatalf("Unable to create posix test setup, %s", err)
+	}
+	defer removeAll(path)
+
+	if err = fsMkdir(pathJoin(path, "testvolume1")); err != nil {
+		t.Fatal(err)
+	}
+	if err = fsRenameFile(pathJoin(path, "testvolume1"), pathJoin(path, "testvolume2")); err != nil {
+		t.Fatal(err)
+	}
+	if err = fsRenameFile(pathJoin(path, "testvolume1"), pathJoin(path, "testvolume2")); errorCause(err) != errFileNotFound {
+		t.Fatal(err)
+	}
+	if err = fsRenameFile(pathJoin(path, "my-obj-del-0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001"), pathJoin(path, "testvolume2")); errorCause(err) != errFileNameTooLong {
+		t.Fatal("Unexpected error", err)
+	}
+	if err = fsRenameFile(pathJoin(path, "testvolume1"), pathJoin(path, "my-obj-del-0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001")); errorCause(err) != errFileNameTooLong {
+		t.Fatal("Unexpected error", err)
+	}
+}
 
 func TestFSStats(t *testing.T) {
 	// create posix test setup
@@ -43,9 +73,8 @@ func TestFSStats(t *testing.T) {
 		t.Fatalf("Unable to create volume, %s", err)
 	}
 
-	var buf = make([]byte, 4096)
 	var reader = bytes.NewReader([]byte("Hello, world"))
-	if _, err = fsCreateFile(pathJoin(path, "success-vol", "success-file"), reader, buf, reader.Size()); err != nil {
+	if _, err = fsCreateFile(pathJoin(path, "success-vol", "success-file"), reader, nil, 0); err != nil {
 		t.Fatalf("Unable to create file, %s", err)
 	}
 	// Seek back.
@@ -55,7 +84,7 @@ func TestFSStats(t *testing.T) {
 		t.Fatal("Unexpected error", err)
 	}
 
-	if _, err = fsCreateFile(pathJoin(path, "success-vol", "path/to/success-file"), reader, buf, reader.Size()); err != nil {
+	if _, err = fsCreateFile(pathJoin(path, "success-vol", "path/to/success-file"), reader, nil, 0); err != nil {
 		t.Fatalf("Unable to create file, %s", err)
 	}
 	// Seek back.
@@ -105,7 +134,7 @@ func TestFSStats(t *testing.T) {
 			srcFSPath:   path,
 			srcVol:      "success-vol",
 			srcPath:     "path",
-			expectedErr: errFileNotFound,
+			expectedErr: errFileAccessDenied,
 		},
 		// Test case - 6.
 		// Test case with src path segment > 255.
@@ -138,7 +167,8 @@ func TestFSStats(t *testing.T) {
 
 	for i, testCase := range testCases {
 		if testCase.srcPath != "" {
-			if _, err := fsStatFile(pathJoin(testCase.srcFSPath, testCase.srcVol, testCase.srcPath)); errorCause(err) != testCase.expectedErr {
+			if _, err := fsStatFile(pathJoin(testCase.srcFSPath, testCase.srcVol,
+				testCase.srcPath)); errorCause(err) != testCase.expectedErr {
 				t.Fatalf("TestPosix case %d: Expected: \"%s\", got: \"%s\"", i+1, testCase.expectedErr, err)
 			}
 		} else {
@@ -169,9 +199,8 @@ func TestFSCreateAndOpen(t *testing.T) {
 		t.Fatal("Unexpected error", err)
 	}
 
-	var buf = make([]byte, 4096)
 	var reader = bytes.NewReader([]byte("Hello, world"))
-	if _, err = fsCreateFile(pathJoin(path, "success-vol", "success-file"), reader, buf, reader.Size()); err != nil {
+	if _, err = fsCreateFile(pathJoin(path, "success-vol", "success-file"), reader, nil, 0); err != nil {
 		t.Fatalf("Unable to create file, %s", err)
 	}
 	// Seek back.
@@ -199,7 +228,7 @@ func TestFSCreateAndOpen(t *testing.T) {
 	}
 
 	for i, testCase := range testCases {
-		_, err = fsCreateFile(pathJoin(path, testCase.srcVol, testCase.srcPath), reader, buf, reader.Size())
+		_, err = fsCreateFile(pathJoin(path, testCase.srcVol, testCase.srcPath), reader, nil, 0)
 		if errorCause(err) != testCase.expectedErr {
 			t.Errorf("Test case %d: Expected: \"%s\", got: \"%s\"", i+1, testCase.expectedErr, err)
 		}
@@ -292,15 +321,14 @@ func TestFSRemoves(t *testing.T) {
 		t.Fatalf("Unable to create directory, %s", err)
 	}
 
-	var buf = make([]byte, 4096)
 	var reader = bytes.NewReader([]byte("Hello, world"))
-	if _, err = fsCreateFile(pathJoin(path, "success-vol", "success-file"), reader, buf, reader.Size()); err != nil {
+	if _, err = fsCreateFile(pathJoin(path, "success-vol", "success-file"), reader, nil, 0); err != nil {
 		t.Fatalf("Unable to create file, %s", err)
 	}
 	// Seek back.
 	reader.Seek(0, 0)
 
-	if _, err = fsCreateFile(pathJoin(path, "success-vol", "success-file-new"), reader, buf, reader.Size()); err != nil {
+	if _, err = fsCreateFile(pathJoin(path, "success-vol", "success-file-new"), reader, nil, 0); err != nil {
 		t.Fatalf("Unable to create file, %s", err)
 	}
 	// Seek back.
@@ -394,5 +422,53 @@ func TestFSRemoves(t *testing.T) {
 
 	if err = fsRemoveAll("my-obj-del-0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001"); errorCause(err) != errFileNameTooLong {
 		t.Fatal(err)
+	}
+}
+
+func TestFSRemoveMeta(t *testing.T) {
+	// create posix test setup
+	_, fsPath, err := newPosixTestSetup()
+	if err != nil {
+		t.Fatalf("Unable to create posix test setup, %s", err)
+	}
+	defer removeAll(fsPath)
+
+	// Setup test environment.
+	if err = fsMkdir(pathJoin(fsPath, "success-vol")); err != nil {
+		t.Fatalf("Unable to create directory, %s", err)
+	}
+
+	filePath := pathJoin(fsPath, "success-vol", "success-file")
+
+	var reader = bytes.NewReader([]byte("Hello, world"))
+	if _, err = fsCreateFile(filePath, reader, nil, 0); err != nil {
+		t.Fatalf("Unable to create file, %s", err)
+	}
+
+	rwPool := &fsIOPool{
+		readersMap: make(map[string]*lock.RLockedFile),
+	}
+
+	if _, err := rwPool.Open(filePath); err != nil {
+		t.Fatalf("Unable to lock file %s", filePath)
+	}
+
+	defer rwPool.Close(filePath)
+
+	tmpDir, tmpErr := ioutil.TempDir(globalTestTmpDir, "minio-")
+	if tmpErr != nil {
+		t.Fatal(tmpErr)
+	}
+
+	if err := fsRemoveMeta(fsPath, filePath, tmpDir); err != nil {
+		t.Fatalf("Unable to remove file, %s", err)
+	}
+
+	if _, err := osStat(preparePath(filePath)); !os.IsNotExist(err) {
+		t.Fatalf("`%s` file found though it should have been deleted.", filePath)
+	}
+
+	if _, err := osStat(preparePath(path.Dir(filePath))); !os.IsNotExist(err) {
+		t.Fatalf("`%s` parent directory found though it should have been deleted.", filePath)
 	}
 }

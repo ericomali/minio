@@ -20,8 +20,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"io/ioutil"
 	"reflect"
 	"sync"
+
+	"github.com/minio/minio/pkg/lock"
 )
 
 // fsFormat - structure holding 'fs' format.
@@ -45,6 +49,43 @@ type formatConfigV1 struct {
 	Format string    `json:"format"`
 	FS     *fsFormat `json:"fs,omitempty"` // FS field holds fs format.
 	XL     *xlFormat `json:"xl,omitempty"` // XL field holds xl format.
+}
+
+func (f *formatConfigV1) WriteTo(lk *lock.LockedFile) (n int64, err error) {
+	// Serialize to prepare to write to disk.
+	var fbytes []byte
+	fbytes, err = json.Marshal(f)
+	if err != nil {
+		return 0, traceError(err)
+	}
+	if err = lk.Truncate(0); err != nil {
+		return 0, traceError(err)
+	}
+	_, err = lk.Write(fbytes)
+	if err != nil {
+		return 0, traceError(err)
+	}
+	return int64(len(fbytes)), nil
+}
+
+func (f *formatConfigV1) ReadFrom(lk *lock.LockedFile) (n int64, err error) {
+	var fbytes []byte
+	fi, err := lk.Stat()
+	if err != nil {
+		return 0, traceError(err)
+	}
+	fbytes, err = ioutil.ReadAll(io.NewSectionReader(lk, 0, fi.Size()))
+	if err != nil {
+		return 0, traceError(err)
+	}
+	if len(fbytes) == 0 {
+		return 0, traceError(io.EOF)
+	}
+	// Decode `format.json`.
+	if err = json.Unmarshal(fbytes, f); err != nil {
+		return 0, traceError(err)
+	}
+	return int64(len(fbytes)), nil
 }
 
 /*
@@ -768,31 +809,39 @@ func loadFormatXL(bootstrapDisks []StorageAPI, readQuorum int) (disks []StorageA
 	return reorderDisks(bootstrapDisks, formatConfigs)
 }
 
-func checkFormatXLValues(formatConfigs []*formatConfigV1) error {
-	for _, formatXL := range formatConfigs {
-		if formatXL == nil {
-			continue
-		}
-		// Validate format version and format type.
-		if formatXL.Version != "1" {
-			return fmt.Errorf("Unsupported version of backend format [%s] found", formatXL.Version)
-		}
-		if formatXL.Format != "xl" {
-			return fmt.Errorf("Unsupported backend format [%s] found", formatXL.Format)
-		}
-		if formatXL.XL.Version != "1" {
-			return fmt.Errorf("Unsupported XL backend format found [%s]", formatXL.XL.Version)
-		}
-		if len(formatConfigs) != len(formatXL.XL.JBOD) {
-			return fmt.Errorf("Number of disks %d did not match the backend format %d", len(formatConfigs), len(formatXL.XL.JBOD))
-		}
+func checkFormatXLValue(formatXL *formatConfigV1) error {
+	// Validate format version and format type.
+	if formatXL.Version != "1" {
+		return fmt.Errorf("Unsupported version of backend format [%s] found", formatXL.Version)
+	}
+	if formatXL.Format != "xl" {
+		return fmt.Errorf("Unsupported backend format [%s] found", formatXL.Format)
+	}
+	if formatXL.XL.Version != "1" {
+		return fmt.Errorf("Unsupported XL backend format found [%s]", formatXL.XL.Version)
 	}
 	return nil
 }
 
+func checkFormatXLValues(formatConfigs []*formatConfigV1) (int, error) {
+	for i, formatXL := range formatConfigs {
+		if formatXL == nil {
+			continue
+		}
+		if err := checkFormatXLValue(formatXL); err != nil {
+			return i, err
+		}
+		if len(formatConfigs) != len(formatXL.XL.JBOD) {
+			return i, fmt.Errorf("Number of disks %d did not match the backend format %d",
+				len(formatConfigs), len(formatXL.XL.JBOD))
+		}
+	}
+	return -1, nil
+}
+
 // checkFormatXL - verifies if format.json format is intact.
 func checkFormatXL(formatConfigs []*formatConfigV1) error {
-	if err := checkFormatXLValues(formatConfigs); err != nil {
+	if _, err := checkFormatXLValues(formatConfigs); err != nil {
 		return err
 	}
 	if err := checkJBODConsistency(formatConfigs); err != nil {

@@ -170,7 +170,40 @@ func (s *TestSuiteCommon) TestObjectDir(c *C) {
 	response, err = client.Do(request)
 
 	c.Assert(err, IsNil)
-	verifyError(c, response, "XMinioInvalidObjectName", "Object name contains unsupported characters. Unsupported characters are `^*|\\\"", http.StatusBadRequest)
+	verifyError(c, response, "XMinioInvalidObjectName", "Object name contains unsupported characters.", http.StatusBadRequest)
+
+	request, err = newTestSignedRequest("HEAD", getHeadObjectURL(s.endPoint, bucketName, "my-object-directory/"),
+		0, nil, s.accessKey, s.secretKey, s.signer)
+	c.Assert(err, IsNil)
+
+	client = http.Client{Transport: s.transport}
+	// execute the HTTP request.
+	response, err = client.Do(request)
+
+	c.Assert(err, IsNil)
+	c.Assert(response.StatusCode, Equals, http.StatusNotFound)
+
+	request, err = newTestSignedRequest("GET", getGetObjectURL(s.endPoint, bucketName, "my-object-directory/"),
+		0, nil, s.accessKey, s.secretKey, s.signer)
+	c.Assert(err, IsNil)
+
+	client = http.Client{Transport: s.transport}
+	// execute the HTTP request.
+	response, err = client.Do(request)
+
+	c.Assert(err, IsNil)
+	c.Assert(response.StatusCode, Equals, http.StatusNotFound)
+
+	request, err = newTestSignedRequest("DELETE", getDeleteObjectURL(s.endPoint, bucketName, "my-object-directory/"),
+		0, nil, s.accessKey, s.secretKey, s.signer)
+	c.Assert(err, IsNil)
+
+	client = http.Client{Transport: s.transport}
+	// execute the HTTP request.
+	response, err = client.Do(request)
+
+	c.Assert(err, IsNil)
+	c.Assert(response.StatusCode, Equals, http.StatusNoContent)
 }
 
 func (s *TestSuiteCommon) TestBucketSQSNotificationAMQP(c *C) {
@@ -1245,7 +1278,7 @@ func (s *TestSuiteCommon) TestPutObjectLongName(c *C) {
 
 	response, err = client.Do(request)
 	c.Assert(err, IsNil)
-	verifyError(c, response, "XMinioInvalidObjectName", "Object name contains unsupported characters. Unsupported characters are `^*|\\\"", http.StatusBadRequest)
+	verifyError(c, response, "XMinioInvalidObjectName", "Object name contains unsupported characters.", http.StatusBadRequest)
 }
 
 // TestNotBeAbleToCreateObjectInNonexistentBucket - Validates the error response
@@ -1342,6 +1375,19 @@ func (s *TestSuiteCommon) TestHeadOnObjectLastModified(c *C) {
 	response, err = client.Do(request)
 	c.Assert(err, IsNil)
 	c.Assert(response.StatusCode, Equals, http.StatusPreconditionFailed)
+
+	// make HTTP request to obtain object info.
+	// But this time set a date with unrecognized format to the "If-Modified-Since" header
+	request, err = newTestSignedRequest("HEAD", getHeadObjectURL(s.endPoint, bucketName, objectName),
+		0, nil, s.accessKey, s.secretKey, s.signer)
+	c.Assert(err, IsNil)
+	request.Header.Set("If-Unmodified-Since", "Mon, 02 Jan 2006 15:04:05 +00:00")
+	response, err = client.Do(request)
+	c.Assert(err, IsNil)
+	// Since the "If-Modified-Since" header was ahead in time compared to the actual
+	// modified time of the object expecting the response status to be http.StatusNotModified.
+	c.Assert(response.StatusCode, Equals, http.StatusOK)
+
 }
 
 // TestHeadOnBucket - Validates response for HEAD on the bucket.
@@ -1820,25 +1866,23 @@ func (s *TestSuiteCommon) TestGetPartialObjectMisAligned(c *C) {
 	c.Assert(response.StatusCode, Equals, http.StatusOK)
 
 	var buffer bytes.Buffer
-	line := `1234567890,1234567890,1234567890,1234567890,1234567890,1234567890,1234567890,1234567890,1234567890,
-	1234567890,1234567890,1234567890,1234567890,1234567890,1234567890,1234567890,1234567890,1234567890,1234567890,
-	1234567890,1234567890,1234567890,1234567890,1234567890,1234567890,1234567890,1234567890,1234567890,1234567890,
-	1234567890,1234567890,1234567890,1234567890,1234567890,1234567890,1234567890,1234567890,1234567890,1234567890,
-	1234567890,1234567890,1234567890,1234567890,1234567890,1234567890,1234567890,1234567890,1234567890,1234567890,
-	1234567890,1234567890,1234567890,1234567890,1234567890,1234567890,1234567890,1234567890,1234567890,1234567890,
-	1234567890,1234567890,1234567890,1234567890,1234567890,1234567890,1234567890,1234567890,1234567890,1234567890,
-	1234567890,1234567890,1234567890,1234567890,1234567890,1234567890,1234567890,1234567890,1234567890,1234567890,
-	1234567890,1234567890,1234567890,1234567890,1234567890,1234567890,1234567890,1234567890,1234567890,1234567890,
-	1234567890,1234567890,1234567890,123`
-
-	rand.Seed(UTCNow().UnixNano())
-	// Create a misalgined data.
-	for i := 0; i < 13*rand.Intn(1<<16); i++ {
-		buffer.WriteString(fmt.Sprintf("[%05d] %s\n", i, line[:rand.Intn(1<<8)]))
+	// data to be written into buffer.
+	data := "1234567890"
+	// seed the random number generator once.
+	rand.Seed(3)
+	// generate a random number between 13 and 200.
+	randInt := getRandomRange(13, 200, -1)
+	// write into buffer till length of the buffer is greater than the generated random number.
+	for i := 0; i <= randInt; i += 10 {
+		buffer.WriteString(data)
 	}
-	putContent := buffer.String()
-	buf := bytes.NewReader([]byte(putContent))
-
+	// String content which is used for put object range test.
+	putBytes := buffer.Bytes()
+	putBytes = putBytes[:randInt]
+	// randomize the order of bytes in the byte array and create a reader.
+	putBytes = randomizeBytes(putBytes, -1)
+	buf := bytes.NewReader(putBytes)
+	putContent := string(putBytes)
 	objectName := "test-big-file"
 	// HTTP request to upload the object.
 	request, err = newTestSignedRequest("PUT", getPutObjectURL(s.endPoint, bucketName, objectName),
@@ -1869,6 +1913,7 @@ func (s *TestSuiteCommon) TestGetPartialObjectMisAligned(c *C) {
 		// request for last 7 bytes of the object.
 		{"-7", putContent[len(putContent)-7:]},
 	}
+
 	for _, t := range testCases {
 		// HTTP request to download the object.
 		request, err = newTestSignedRequest("GET", getGetObjectURL(s.endPoint, bucketName, objectName),

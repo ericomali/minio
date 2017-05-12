@@ -26,6 +26,7 @@ Install minio packages using [Homebrew](http://brew.sh/)
 brew install minio/stable/minio
 minio server ~/Photos
 ```
+Note: If you are upgrading minio on macOS, please see instructions [here](https://github.com/minio/minio/blob/master/docs/minio_homebrew.md).
 
 ### Binary Download
 | Platform| Architecture | URL|
@@ -61,6 +62,16 @@ minio.exe server D:\Photos
 ```
 
 ## FreeBSD
+### Port
+Install minio packages using [pkg](https://github.com/freebsd/pkg)
+
+```sh
+pkg install minio
+sysrc minio_enable=yes
+sysrc minio_disks=/home/user/Photos
+service minio start
+```
+
 ### Binary Download
 | Platform| Architecture | URL|
 | ----------| -------- | ------|
@@ -69,8 +80,6 @@ minio.exe server D:\Photos
 chmod 755 minio
 ./minio server ~/Photos
 ```
-
-You can run Minio on FreeBSD with FreeNAS storage-backend - see [here](https://docs.minio.io/docs/how-to-run-minio-in-freenas) for more details.
 
 ## Install from Source
 

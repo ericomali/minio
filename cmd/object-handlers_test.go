@@ -316,6 +316,58 @@ func testAPIGetObjectHandler(obj ObjectLayer, instanceType, bucketName string, a
 			expectedContent:    encodeResponse(getAPIErrorResponse(getAPIError(ErrInvalidAccessKeyID), getGetObjectURL("", bucketName, objectName))),
 			expectedRespStatus: http.StatusForbidden,
 		},
+		// Test case - 7.
+		// Case with bad components in object name.
+		{
+			bucketName: bucketName,
+			objectName: "../../etc",
+			byteRange:  "",
+			accessKey:  credentials.AccessKey,
+			secretKey:  credentials.SecretKey,
+
+			expectedContent: encodeResponse(getAPIErrorResponse(getAPIError(ErrInvalidObjectName),
+				getGetObjectURL("", bucketName, "../../etc"))),
+			expectedRespStatus: http.StatusBadRequest,
+		},
+		// Test case - 8.
+		// Case with strange components but returning error as not found.
+		{
+			bucketName: bucketName,
+			objectName: ". ./. ./etc",
+			byteRange:  "",
+			accessKey:  credentials.AccessKey,
+			secretKey:  credentials.SecretKey,
+
+			expectedContent: encodeResponse(getAPIErrorResponse(getAPIError(ErrNoSuchKey),
+				"/"+bucketName+"/"+". ./. ./etc")),
+			expectedRespStatus: http.StatusNotFound,
+		},
+		// Test case - 9.
+		// Case with bad components in object name.
+		{
+			bucketName: bucketName,
+			objectName: ". ./../etc",
+			byteRange:  "",
+			accessKey:  credentials.AccessKey,
+			secretKey:  credentials.SecretKey,
+
+			expectedContent: encodeResponse(getAPIErrorResponse(getAPIError(ErrInvalidObjectName),
+				"/"+bucketName+"/"+". ./../etc")),
+			expectedRespStatus: http.StatusBadRequest,
+		},
+		// Test case - 10.
+		// Case with proper components
+		{
+			bucketName: bucketName,
+			objectName: "etc/path/proper/.../etc",
+			byteRange:  "",
+			accessKey:  credentials.AccessKey,
+			secretKey:  credentials.SecretKey,
+
+			expectedContent: encodeResponse(getAPIErrorResponse(getAPIError(ErrNoSuchKey),
+				getGetObjectURL("", bucketName, "etc/path/proper/.../etc"))),
+			expectedRespStatus: http.StatusNotFound,
+		},
 	}
 
 	// Iterating over the cases, fetching the object validating the response.
@@ -346,7 +398,7 @@ func testAPIGetObjectHandler(obj ObjectLayer, instanceType, bucketName string, a
 		}
 		// Verify whether the bucket obtained object is same as the one created.
 		if !bytes.Equal(testCase.expectedContent, actualContent) {
-			t.Errorf("Test %d: %s: Object content differs from expected value.: %s", i+1, instanceType, string(actualContent))
+			t.Errorf("Test %d: %s: Object content differs from expected value %s, got %s", i+1, instanceType, testCase.expectedContent, string(actualContent))
 		}
 
 		// Verify response of the V2 signed HTTP request.
@@ -1473,15 +1525,17 @@ func testAPICopyObjectHandler(obj ObjectLayer, instanceType, bucketName string, 
 
 	// test cases with inputs and expected result for Copy Object.
 	testCases := []struct {
-		bucketName       string
-		newObjectName    string // name of the newly copied object.
-		copySourceHeader string // data for "X-Amz-Copy-Source" header. Contains the object to be copied in the URL.
-		metadataGarbage  bool
-		metadataReplace  bool
-		metadataCopy     bool
-		metadata         map[string]string
-		accessKey        string
-		secretKey        string
+		bucketName           string
+		newObjectName        string // name of the newly copied object.
+		copySourceHeader     string // data for "X-Amz-Copy-Source" header. Contains the object to be copied in the URL.
+		copyModifiedHeader   string // data for "X-Amz-Copy-Source-If-Modified-Since" header
+		copyUnmodifiedHeader string // data for "X-Amz-Copy-Source-If-Unmodified-Since" header
+		metadataGarbage      bool
+		metadataReplace      bool
+		metadataCopy         bool
+		metadata             map[string]string
+		accessKey            string
+		secretKey            string
 		// expected output.
 		expectedRespStatus int
 	}{
@@ -1624,6 +1678,66 @@ func testAPICopyObjectHandler(obj ObjectLayer, instanceType, bucketName string, 
 
 			expectedRespStatus: http.StatusForbidden,
 		},
+		// Test case - 11, copy metadata from newObject1 with satisfying modified header.
+		{
+			bucketName:         bucketName,
+			newObjectName:      "newObject1",
+			copySourceHeader:   url.QueryEscape("/" + bucketName + "/" + objectName),
+			copyModifiedHeader: "Mon, 02 Jan 2006 15:04:05 GMT",
+			accessKey:          credentials.AccessKey,
+			secretKey:          credentials.SecretKey,
+			expectedRespStatus: http.StatusOK,
+		},
+		// Test case - 12, copy metadata from newObject1 with unsatisfying modified header.
+		{
+			bucketName:         bucketName,
+			newObjectName:      "newObject1",
+			copySourceHeader:   url.QueryEscape("/" + bucketName + "/" + objectName),
+			copyModifiedHeader: "Mon, 02 Jan 2217 15:04:05 GMT",
+			accessKey:          credentials.AccessKey,
+			secretKey:          credentials.SecretKey,
+			expectedRespStatus: http.StatusPreconditionFailed,
+		},
+		// Test case - 13, copy metadata from newObject1 with wrong modified header format
+		{
+			bucketName:         bucketName,
+			newObjectName:      "newObject1",
+			copySourceHeader:   url.QueryEscape("/" + bucketName + "/" + objectName),
+			copyModifiedHeader: "Mon, 02 Jan 2217 15:04:05 +00:00",
+			accessKey:          credentials.AccessKey,
+			secretKey:          credentials.SecretKey,
+			expectedRespStatus: http.StatusOK,
+		},
+		// Test case - 14, copy metadata from newObject1 with satisfying unmodified header.
+		{
+			bucketName:           bucketName,
+			newObjectName:        "newObject1",
+			copySourceHeader:     url.QueryEscape("/" + bucketName + "/" + objectName),
+			copyUnmodifiedHeader: "Mon, 02 Jan 2217 15:04:05 GMT",
+			accessKey:            credentials.AccessKey,
+			secretKey:            credentials.SecretKey,
+			expectedRespStatus:   http.StatusOK,
+		},
+		// Test case - 15, copy metadata from newObject1 with unsatisfying unmodified header.
+		{
+			bucketName:           bucketName,
+			newObjectName:        "newObject1",
+			copySourceHeader:     url.QueryEscape("/" + bucketName + "/" + objectName),
+			copyUnmodifiedHeader: "Mon, 02 Jan 2007 15:04:05 GMT",
+			accessKey:            credentials.AccessKey,
+			secretKey:            credentials.SecretKey,
+			expectedRespStatus:   http.StatusPreconditionFailed,
+		},
+		// Test case - 16, copy metadata from newObject1 with incorrect unmodified header format.
+		{
+			bucketName:           bucketName,
+			newObjectName:        "newObject1",
+			copySourceHeader:     url.QueryEscape("/" + bucketName + "/" + objectName),
+			copyUnmodifiedHeader: "Mon, 02 Jan 2007 15:04:05 +00:00",
+			accessKey:            credentials.AccessKey,
+			secretKey:            credentials.SecretKey,
+			expectedRespStatus:   http.StatusOK,
+		},
 	}
 
 	for i, testCase := range testCases {
@@ -1641,6 +1755,12 @@ func testAPICopyObjectHandler(obj ObjectLayer, instanceType, bucketName string, 
 		// "X-Amz-Copy-Source" header contains the information about the source bucket and the object to copied.
 		if testCase.copySourceHeader != "" {
 			req.Header.Set("X-Amz-Copy-Source", testCase.copySourceHeader)
+		}
+		if testCase.copyModifiedHeader != "" {
+			req.Header.Set("X-Amz-Copy-Source-If-Modified-Since", testCase.copyModifiedHeader)
+		}
+		if testCase.copyUnmodifiedHeader != "" {
+			req.Header.Set("X-Amz-Copy-Source-If-Unmodified-Since", testCase.copyUnmodifiedHeader)
 		}
 		// Add custom metadata.
 		for k, v := range testCase.metadata {
@@ -1686,6 +1806,12 @@ func testAPICopyObjectHandler(obj ObjectLayer, instanceType, bucketName string, 
 		// "X-Amz-Copy-Source" header contains the information about the source bucket and the object to copied.
 		if testCase.copySourceHeader != "" {
 			reqV2.Header.Set("X-Amz-Copy-Source", testCase.copySourceHeader)
+		}
+		if testCase.copyModifiedHeader != "" {
+			reqV2.Header.Set("X-Amz-Copy-Source-If-Modified-Since", testCase.copyModifiedHeader)
+		}
+		if testCase.copyUnmodifiedHeader != "" {
+			reqV2.Header.Set("X-Amz-Copy-Source-If-Unmodified-Since", testCase.copyUnmodifiedHeader)
 		}
 
 		// Add custom metadata.
@@ -2000,8 +2126,8 @@ func testAPICompleteMultipartHandler(obj ObjectLayer, instanceType, bucketName s
 		uploadIDs = append(uploadIDs, uploadID)
 	}
 
-	// Parts with size greater than 5 MB.
-	// Generating a 6MB byte array.
+	// Parts with size greater than 5 MiB.
+	// Generating a 6 MiB byte array.
 	validPart := bytes.Repeat([]byte("abcdef"), 1*humanize.MiByte)
 	validPartMD5 := getMD5Hash(validPart)
 	// Create multipart parts.
@@ -2021,11 +2147,11 @@ func testAPICompleteMultipartHandler(obj ObjectLayer, instanceType, bucketName s
 		{bucketName, objectName, uploadIDs[0], 2, "efgh", "1f7690ebdd9b4caf8fab49ca1757bf27", int64(len("efgh"))},
 		{bucketName, objectName, uploadIDs[0], 3, "ijkl", "09a0877d04abf8759f99adec02baf579", int64(len("abcd"))},
 		{bucketName, objectName, uploadIDs[0], 4, "mnop", "e132e96a5ddad6da8b07bba6f6131fef", int64(len("abcd"))},
-		// Part with size larger than 5Mb.
+		// Part with size larger than 5 MiB.
 		{bucketName, objectName, uploadIDs[0], 5, string(validPart), validPartMD5, int64(len(string(validPart)))},
 		{bucketName, objectName, uploadIDs[0], 6, string(validPart), validPartMD5, int64(len(string(validPart)))},
 
-		// Part with size larger than 5Mb.
+		// Part with size larger than 5 MiB.
 		// Parts uploaded for anonymous/unsigned API handler test.
 		{bucketName, objectName, uploadIDs[1], 1, string(validPart), validPartMD5, int64(len(string(validPart)))},
 		{bucketName, objectName, uploadIDs[1], 2, string(validPart), validPartMD5, int64(len(string(validPart)))},
@@ -2066,7 +2192,7 @@ func testAPICompleteMultipartHandler(obj ObjectLayer, instanceType, bucketName s
 		},
 		// inputParts - 3.
 		// Case with valid parts,but parts are unsorted.
-		// Part size greater than 5MB.
+		// Part size greater than 5 MiB.
 		{
 			[]completePart{
 				{ETag: validPartMD5, PartNumber: 6},
@@ -2075,7 +2201,7 @@ func testAPICompleteMultipartHandler(obj ObjectLayer, instanceType, bucketName s
 		},
 		// inputParts - 4.
 		// Case with valid part.
-		// Part size greater than 5MB.
+		// Part size greater than 5 MiB.
 		{
 			[]completePart{
 				{ETag: validPartMD5, PartNumber: 5},
@@ -2085,7 +2211,7 @@ func testAPICompleteMultipartHandler(obj ObjectLayer, instanceType, bucketName s
 
 		// inputParts - 5.
 		// Used for the case of testing for anonymous API request.
-		// Part size greater than 5MB.
+		// Part size greater than 5 MiB.
 		{
 			[]completePart{
 				{ETag: validPartMD5, PartNumber: 1},
@@ -2355,8 +2481,8 @@ func testAPIAbortMultipartHandler(obj ObjectLayer, instanceType, bucketName stri
 		uploadIDs = append(uploadIDs, uploadID)
 	}
 
-	// Parts with size greater than 5 MB.
-	// Generating a 6MB byte array.
+	// Parts with size greater than 5 MiB.
+	// Generating a 6 MiB byte array.
 	validPart := bytes.Repeat([]byte("abcdef"), 1*humanize.MiByte)
 	validPartMD5 := getMD5Hash(validPart)
 	// Create multipart parts.
@@ -2376,11 +2502,11 @@ func testAPIAbortMultipartHandler(obj ObjectLayer, instanceType, bucketName stri
 		{bucketName, objectName, uploadIDs[0], 2, "efgh", "1f7690ebdd9b4caf8fab49ca1757bf27", int64(len("efgh"))},
 		{bucketName, objectName, uploadIDs[0], 3, "ijkl", "09a0877d04abf8759f99adec02baf579", int64(len("abcd"))},
 		{bucketName, objectName, uploadIDs[0], 4, "mnop", "e132e96a5ddad6da8b07bba6f6131fef", int64(len("abcd"))},
-		// Part with size larger than 5Mb.
+		// Part with size larger than 5 MiB.
 		{bucketName, objectName, uploadIDs[0], 5, string(validPart), validPartMD5, int64(len(string(validPart)))},
 		{bucketName, objectName, uploadIDs[0], 6, string(validPart), validPartMD5, int64(len(string(validPart)))},
 
-		// Part with size larger than 5Mb.
+		// Part with size larger than 5 MiB.
 		// Parts uploaded for anonymous/unsigned API handler test.
 		{bucketName, objectName, uploadIDs[1], 1, string(validPart), validPartMD5, int64(len(string(validPart)))},
 		{bucketName, objectName, uploadIDs[1], 2, string(validPart), validPartMD5, int64(len(string(validPart)))},

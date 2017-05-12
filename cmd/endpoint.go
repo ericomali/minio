@@ -182,12 +182,12 @@ func (endpoints EndpointList) SetHTTP() {
 func NewEndpointList(args ...string) (endpoints EndpointList, err error) {
 	// isValidDistribution - checks whether given count is a valid distribution for erasure coding.
 	isValidDistribution := func(count int) bool {
-		return (count >= 4 && count <= 16 && count%2 == 0)
+		return (count >= minErasureBlocks && count <= maxErasureBlocks && count%2 == 0)
 	}
 
 	// Check whether no. of args are valid for XL distribution.
 	if !isValidDistribution(len(args)) {
-		return nil, fmt.Errorf("total endpoints %d found. For XL/Distribute, it should be 4, 6, 8, 10, 12, 14 or 16", len(args))
+		return nil, fmt.Errorf("A total of %d endpoints were found. For erasure mode it should be an even number between %d and %d", len(args), minErasureBlocks, maxErasureBlocks)
 	}
 
 	var endpointType EndpointType
@@ -305,9 +305,11 @@ func CreateEndpoints(serverAddr string, args ...string) (string, EndpointList, S
 			hostIPSet, _ := getHostIP4(host)
 			if IPSet, ok := pathIPMap[endpoint.Path]; ok {
 				if !IPSet.Intersection(hostIPSet).IsEmpty() {
-					err = fmt.Errorf("path '%s' can not be served from different address/port", endpoint.Path)
+					err = fmt.Errorf("path '%s' can not be served by different port on same address", endpoint.Path)
 					return serverAddr, endpoints, setupType, err
 				}
+
+				pathIPMap[endpoint.Path] = IPSet.Union(hostIPSet)
 			} else {
 				pathIPMap[endpoint.Path] = hostIPSet
 			}
@@ -327,21 +329,50 @@ func CreateEndpoints(serverAddr string, args ...string) (string, EndpointList, S
 		}
 	}
 
-	// If all endpoints are pointing to local host and having same port number, then this is XL setup using URL style endpoints.
-	if len(endpoints) == localEndpointCount && len(localPortSet) == 1 {
-		if len(localServerAddrSet) > 1 {
-			// TODO: Eventhough all endpoints are local, the local host is referred by different IP/name.
-			// eg '172.0.0.1', 'localhost' and 'mylocalhostname' point to same local host.
-			//
-			// In this case, we bind to 0.0.0.0 ie to all interfaces.
-			// The actual way to do is bind to only IPs in uniqueLocalHosts.
-			serverAddr = net.JoinHostPort("", serverAddrPort)
+	// All endpoints are pointing to local host
+	if len(endpoints) == localEndpointCount {
+		// If all endpoints have same port number, then this is XL setup using URL style endpoints.
+		if len(localPortSet) == 1 {
+			if len(localServerAddrSet) > 1 {
+				// TODO: Eventhough all endpoints are local, the local host is referred by different IP/name.
+				// eg '172.0.0.1', 'localhost' and 'mylocalhostname' point to same local host.
+				//
+				// In this case, we bind to 0.0.0.0 ie to all interfaces.
+				// The actual way to do is bind to only IPs in uniqueLocalHosts.
+				serverAddr = net.JoinHostPort("", serverAddrPort)
+			}
+
+			endpointPaths := endpointPathSet.ToSlice()
+			endpoints, _ = NewEndpointList(endpointPaths...)
+			setupType = XLSetupType
+			return serverAddr, endpoints, setupType, nil
 		}
 
-		endpointPaths := endpointPathSet.ToSlice()
-		endpoints, _ = NewEndpointList(endpointPaths...)
-		setupType = XLSetupType
-		return serverAddr, endpoints, setupType, nil
+		// Eventhough all endpoints are local, but those endpoints use different ports.
+		// This means it is DistXL setup.
+	} else {
+		// This is DistXL setup.
+		// Check whether local server address are not 127.x.x.x
+		for _, localServerAddr := range localServerAddrSet.ToSlice() {
+			host, _, err := net.SplitHostPort(localServerAddr)
+			if err != nil {
+				host = localServerAddr
+			}
+
+			ipList, err := getHostIP4(host)
+			fatalIf(err, "unexpected error when resolving host '%s'", host)
+
+			// Filter ipList by IPs those start with '127.'.
+			loopBackIPs := ipList.FuncMatch(func(ip string, matchString string) bool {
+				return strings.HasPrefix(ip, "127.")
+			}, "")
+
+			// If loop back IP is found and ipList contains only loop back IPs, then error out.
+			if len(loopBackIPs) > 0 && len(loopBackIPs) == len(ipList) {
+				err = fmt.Errorf("'%s' resolves to loopback address is not allowed for distributed XL", localServerAddr)
+				return serverAddr, endpoints, setupType, err
+			}
+		}
 	}
 
 	// Add missing port in all endpoints.
@@ -355,7 +386,6 @@ func CreateEndpoints(serverAddr string, args ...string) (string, EndpointList, S
 		}
 	}
 
-	// This is DistXL setup.
 	setupType = DistXLSetupType
 	return serverAddr, endpoints, setupType, nil
 }
